@@ -1,0 +1,128 @@
+import json
+
+var content = file('results/main.jsonl').read().to_string().trim()
+var lines = content.split('\n')
+
+var by_lib = {}
+var by_lib_proto = {}
+var by_lib_workload = {}
+
+for line in lines {
+  if line.trim().is_empty() {
+    continue
+  }
+  var row = json.decode(line)
+  var name = row.lib
+  var proto = row.protocol
+  var workload = row.workload
+  var rps = row.req_per_s
+  var lat = row.latency_mean_us
+  var rss = row.rss_kb
+
+  if !by_lib.contains(name) {
+    by_lib[name] = { rps: [], lat: [], rss: [] }
+  }
+  by_lib[name]['rps'].append(rps)
+  by_lib[name]['lat'].append(lat)
+  by_lib[name]['rss'].append(rss)
+
+  var lp_key = name + ':' + proto
+  if !by_lib_proto.contains(lp_key) {
+    by_lib_proto[lp_key] = []
+  }
+  by_lib_proto[lp_key].append(rps)
+
+  var lw_key = name + ':' + workload
+  if !by_lib_workload.contains(lw_key) {
+    by_lib_workload[lw_key] = []
+  }
+  by_lib_workload[lw_key].append(rps)
+}
+
+def mean(arr) {
+  var s = 0.0
+  for v in arr {
+    s += v
+  }
+  return arr.length() > 0 ? s / arr.length() : 0.0
+}
+
+def max_val(arr) {
+  var m = 0.0
+  for v in arr {
+    if v > m {
+      m = v
+    }
+  }
+  return m
+}
+
+def pad_r(s, w) {
+  var res = is_string(s) ? s : s.to_string()
+  while res.length() < w {
+    res += ' '
+  }
+  return res
+}
+
+def pad_l(s, w) {
+  var res = is_string(s) ? s : s.to_string()
+  while res.length() < w {
+    res = ' ' + res
+  }
+  return res
+}
+
+echo "=== Overall Ranking ==="
+echo "Runtime       | Mean req/s | Mean Lat (ms) | Peak RSS (MB)"
+echo "--------------------------------------------------------"
+var names = by_lib.keys()
+names.sort(@(a, b) {
+  var ma = mean(by_lib[a]['rps'])
+  var mb = mean(by_lib[b]['rps'])
+  return mb > ma ? 1 : (mb < ma ? -1 : 0)
+})
+
+for name in names {
+  var m_rps = mean(by_lib[name]['rps'])
+  var m_lat = mean(by_lib[name]['lat']) / 1000.0
+  var peak_rss = max_val(by_lib[name]['rss']) / 1024.0
+  echo pad_r(name, 13)
+    + " | "
+    + pad_l(m_rps.fixed(1), 10)
+    + " | "
+    + pad_l(m_lat.fixed(2), 13)
+    + " | "
+    + pad_l(peak_rss.fixed(1), 13)
+}
+
+echo ""
+echo "=== Protocol Comparison (Mean req/s) ==="
+echo "Runtime       | HTTP/1.1   | HTTP/2"
+echo "-------------------------------------"
+for name in names {
+  var h1 = mean(by_lib_proto[name + ':http1'])
+  var h2 = mean(by_lib_proto[name + ':http2'])
+  echo pad_r(name, 13)
+    + " | "
+    + pad_l(h1.fixed(1), 10)
+    + " | "
+    + pad_l(h2.fixed(1), 10)
+}
+
+echo ""
+echo "=== Workloads Comparison (Mean req/s) ==="
+echo "Runtime       | Plaintext  | JSON       | Echo"
+echo "-------------------------------------------------"
+for name in names {
+  var pt = mean(by_lib_workload[name + ':plaintext'])
+  var js = mean(by_lib_workload[name + ':json'])
+  var ec = mean(by_lib_workload[name + ':echo'])
+  echo pad_r(name, 13)
+    + " | "
+    + pad_l(pt.fixed(1), 10)
+    + " | "
+    + pad_l(js.fixed(1), 10)
+    + " | "
+    + pad_l(ec.fixed(1), 10)
+}

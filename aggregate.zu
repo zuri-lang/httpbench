@@ -1,0 +1,287 @@
+# Aggregates httpbench JSONL results into structured JSON summary.
+#
+# Usage:
+#   zuri run aggregate.zu in=results/main.jsonl out=results/aggregated.json
+
+import json
+import os
+
+var ROOT = os.cwd()
+
+def at(...parts) {
+  return os.join_paths(ROOT, os.path_separator.join(parts))
+}
+
+def options() {
+  var found = {
+    input: at('results', 'main.jsonl'),
+    out: at('results', 'aggregated.json'),
+  }
+
+  for arg in os.args[2,] {
+    var mark = arg.index_of('=')
+    if mark > -1 {
+      var key = arg[0, mark]
+      var val = arg[mark + 1, arg.length()]
+      if key == 'in' {
+        key = 'input'
+      }
+      found.set(key, val)
+    }
+  }
+
+  return found
+}
+
+def max_val(numbers) {
+  if numbers.length() == 0 {
+    return 0.0
+  }
+  var m = 0.0
+  for n in numbers {
+    if n > m {
+      m = n
+    }
+  }
+  return m
+}
+
+def average(numbers) {
+  if numbers.length() == 0 {
+    return 0
+  }
+  var sum_val = 0
+  for n in numbers {
+    sum_val += n
+  }
+  return sum_val / numbers.length()
+}
+
+def median(numbers) {
+  if numbers.length() == 0 {
+    return 0
+  }
+  var sorted = numbers.clone().sort(@(a, b) => a - b)
+  var mid = (sorted.length() / 2).floor()
+  if sorted.length() % 2 == 1 {
+    return sorted[mid]
+  }
+  return (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+def main() {
+  var opts = options()
+  var in_path = opts.input
+  var out_path = opts.out
+
+  if !file(in_path).exists() {
+    echo 'Error: input file does not exist: ' + in_path
+    return
+  }
+
+  var lines = file(in_path).read().to_string().split('\n')
+  var records = []
+
+  var exclude_lib = opts.get('exclude')
+
+  for line in lines {
+    var trimmed = line.trim()
+    if trimmed != '' {
+      catch {
+        var rec = json.decode(trimmed)
+        if !rec.contains('error') and rec.get('status', -1) == 0 {
+          if exclude_lib == nil or rec.lib != exclude_lib {
+            records.append(rec)
+          }
+        }
+      } as _e {}
+    }
+  }
+
+  echo 'Loaded '
+    + records.length().to_string()
+    + ' successful records from '
+    + in_path
+
+  var all_libs = []
+  var all_protocols = ['http1', 'http2']
+  var all_workloads = ['plaintext', 'json', 'echo']
+
+  # Collect distinct libraries
+  for r in records {
+    if !all_libs.contains(r.lib) {
+      all_libs.append(r.lib)
+    }
+  }
+
+  # Grouping helper
+  # cell[lib][protocol][workload] = [records]
+  var cell = {}
+  for l in all_libs {
+    cell.set(l, {})
+    for p in all_protocols {
+      cell[l].set(p, {})
+      for w in all_workloads {
+        cell[l][p].set(w, [])
+      }
+    }
+  }
+
+  for r in records {
+    cell[r.lib][r.protocol][r.workload].append(r)
+  }
+
+  # 1. Overall stats per library
+  var lib_overall = []
+  for l in all_libs {
+    var req_s_list = []
+    var lat_mean_list = []
+    var cpu_list = []
+    var rss_list = []
+    var wall_list = []
+
+    for p in all_protocols {
+      for w in all_workloads {
+        var recs = cell[l][p][w]
+        for r in recs {
+          req_s_list.append(r.req_per_s)
+          lat_mean_list.append(r.latency_mean_us)
+          cpu_list.append(r.server_cpu)
+          rss_list.append(r.rss_kb)
+          wall_list.append(r.wall_s)
+        }
+      }
+    }
+
+    var peak_req_s = max_val(req_s_list)
+    var peak_lat = 0.0
+    iter var i = 0; i < req_s_list.length(); i++ {
+      if req_s_list[i] == peak_req_s and i < lat_mean_list.length() {
+        peak_lat = lat_mean_list[i]
+        break
+      }
+    }
+
+    lib_overall.append({
+      lib: l,
+      count: req_s_list.length(),
+      peak_req_s,
+      mean_req_s: average(req_s_list),
+      median_req_s: median(req_s_list),
+      peak_latency_ms: peak_lat / 1000,
+      mean_latency_ms: average(lat_mean_list) / 1000,
+      median_latency_ms: median(lat_mean_list) / 1000,
+      mean_cpu: average(cpu_list),
+      peak_rss_mb: rss_list.length() > 0
+        ? rss_list.clone().sort(@(a, b) => b - a)[0] / 1024
+        : 0,
+      mean_wall_s: average(wall_list),
+    })
+  }
+
+  # Sort overall by peak_req_s descending
+  lib_overall.sort(@(a, b) => b.peak_req_s - a.peak_req_s)
+
+  # 2. Stats by protocol
+  var by_protocol = {}
+  for p in all_protocols {
+    var list = []
+    for l in all_libs {
+      var req_s_list = []
+      var lat_list = []
+      for w in all_workloads {
+        for r in cell[l][p][w] {
+          req_s_list.append(r.req_per_s)
+          lat_list.append(r.latency_mean_us)
+        }
+      }
+      var peak_p = max_val(req_s_list)
+      var peak_p_lat = 0.0
+      iter var i = 0; i < req_s_list.length(); i++ {
+        if req_s_list[i] == peak_p and i < lat_list.length() {
+          peak_p_lat = lat_list[i]
+          break
+        }
+      }
+      list.append({
+        lib: l,
+        peak_req_s: peak_p,
+        mean_req_s: average(req_s_list),
+        peak_latency_ms: peak_p_lat / 1000,
+        mean_latency_ms: average(lat_list) / 1000,
+      })
+    }
+    list.sort(@(a, b) => b.peak_req_s - a.peak_req_s)
+    by_protocol.set(p, list)
+  }
+
+  # 3. Stats by workload
+  var by_workload = {}
+  for w in all_workloads {
+    var list = []
+    for l in all_libs {
+      var req_s_list = []
+      var lat_list = []
+      for p in all_protocols {
+        for r in cell[l][p][w] {
+          req_s_list.append(r.req_per_s)
+          lat_list.append(r.latency_mean_us)
+        }
+      }
+      var peak_w = max_val(req_s_list)
+      var peak_w_lat = 0.0
+      iter var i = 0; i < req_s_list.length(); i++ {
+        if req_s_list[i] == peak_w and i < lat_list.length() {
+          peak_w_lat = lat_list[i]
+          break
+        }
+      }
+      list.append({
+        lib: l,
+        peak_req_s: peak_w,
+        mean_req_s: average(req_s_list),
+        peak_latency_ms: peak_w_lat / 1000,
+        mean_latency_ms: average(lat_list) / 1000,
+      })
+    }
+    list.sort(@(a, b) => b.peak_req_s - a.peak_req_s)
+    by_workload.set(w, list)
+  }
+
+  # 4. Detailed matrix: lib -> protocol -> workload
+  var matrix = {}
+  for l in all_libs {
+    matrix.set(l, {})
+    for p in all_protocols {
+      matrix[l].set(p, {})
+      for w in all_workloads {
+        var recs = cell[l][p][w]
+        var req_s = recs.map(@(r) => r.req_per_s)
+        var lat = recs.map(@(r) => r.latency_mean_us)
+        var peak_c = max_val(req_s)
+        matrix[l][p].set(w, {
+          count: recs.length(),
+          peak_req_s: peak_c,
+          mean_req_s: average(req_s),
+          mean_latency_ms: average(lat) / 1000,
+        })
+      }
+    }
+  }
+
+  var output_data = {
+    total_records: records.length(),
+    libs: lib_overall,
+    by_protocol,
+    by_workload,
+    matrix,
+  }
+
+  var f = file(out_path, 'w')
+  f.write(json.encode(output_data))
+  f.close()
+
+  echo 'Saved aggregation to ' + out_path
+}
+
+main()

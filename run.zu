@@ -1,0 +1,429 @@
+# The httpbench harness. Benchmarks HTTP/1.1 and HTTP/2 cleartext (h2c)
+# across language runtimes and JIT configurations using h2load.
+#
+#   zuri run run.zu out=results/main.jsonl reps=3 requests=5000 concurrency=25
+#     [protocols=http1,http2] [workloads=plaintext,json,echo] [libs=zuri-raw,node-raw]
+
+import json
+import os
+import net
+
+var ROOT = os.cwd()
+
+def at(...parts) {
+  return os.join_paths(ROOT, os.path_separator.join(parts))
+}
+
+var PROTOCOL_NAMES = ['http1', 'http2']
+var WORKLOAD_NAMES = ['plaintext', 'json', 'echo']
+
+var ZURI = os.which('zuri')
+var NODE = os.which('node')
+var CPYTHON = at('..', 'sqlbench', 'py314', 'bin', 'python')
+var PYPY = at('..', 'sqlbench', 'pypy', 'bin', 'python')
+var RUBY = at('rb', 'run.sh')
+
+def lib(name, cmd, args, env) {
+  return { name, cmd, args, env }
+}
+
+var LIBS = [
+  lib('zuri', ZURI, ['run', at('zu', 'server.zu')], {}),
+  lib(
+    'zuri-kebbi', ZURI, ['run', at('zu', 'server.zu')], { ZURI_JIT_KEBBI: '1' },
+  ),
+  # lib('zuri-serve', ZURI, ['run', at('zu', 'server_serve.zu')], {}),
+  lib('node-raw', NODE, [at('js', 'server.mjs')], {}),
+  lib('py-raw', CPYTHON, [at('py', 'server.py')], {}),
+  lib('pypy-raw', PYPY, [at('py', 'server.py')], {}),
+  lib('rb-raw', RUBY, [], {}),
+]
+
+var DATA_DIR = at('data')
+var ECHO_FILE = at('data', 'echo_payload.bin')
+
+# --- helper functions --------------------------------------------------------
+
+def read_text(path) {
+  return file(path).read().to_string()
+}
+
+def parse_unit_us(s) {
+  var text = s.trim()
+  if text.ends_with('us') {
+    return text[0, text.length() - 2].to_number()
+  }
+  if text.ends_with('ms') {
+    return text[0, text.length() - 2].to_number() * 1000
+  }
+  if text.ends_with('s') {
+    return text[0, text.length() - 1].to_number() * 1000000
+  }
+  return text.to_number()
+}
+
+def parse_h2load_output(out) {
+  var res = {
+    req_per_s: 0,
+    kb_per_s: 0,
+    succeeded: 0,
+    failed: 0,
+    errored: 0,
+    latency_min_us: 0,
+    latency_max_us: 0,
+    latency_mean_us: 0,
+    latency_sd_us: 0,
+  }
+
+  for line in out.split('\n') {
+    var l = line.trim()
+    if l.starts_with('finished in') {
+      var parts = l.split(',')
+      if parts.length() >= 2 {
+        var r_part = parts[1].replace('req/s', '').trim()
+        res.set('req_per_s', r_part.to_number())
+      }
+      if parts.length() >= 3 {
+        var kb_part = parts[2].trim()
+        if kb_part.ends_with('KB/s') {
+          res.set('kb_per_s', kb_part.replace('KB/s', '').to_number())
+        } else if kb_part.ends_with('MB/s') {
+          res.set('kb_per_s', kb_part.replace('MB/s', '').to_number() * 1024)
+        }
+      }
+    } else if l.starts_with('requests:') {
+      # requests: 50 total, 50 started, 50 done, 50 succeeded, 0 failed, 0 errored, 0 timeout
+      var pieces = l.split(',')
+      for piece in pieces {
+        var p = piece.trim()
+        if p.ends_with('succeeded') {
+          res.set('succeeded', p.split(' ')[0].to_number())
+        } else if p.ends_with('failed') {
+          res.set('failed', p.split(' ')[0].to_number())
+        } else if p.ends_with('errored') {
+          res.set('errored', p.split(' ')[0].to_number())
+        }
+      }
+    } else if l.starts_with('time for request:') {
+      # time for request:      367us      6.38ms       888us      1.35ms    95.00%
+      var raw_tokens = l.split(' ')
+      var tokens = []
+      for t in raw_tokens {
+        if t != '' {
+          tokens.append(t)
+        }
+      }
+      if tokens.length() >= 7 {
+        res.set('latency_min_us', parse_unit_us(tokens[3]))
+        res.set('latency_max_us', parse_unit_us(tokens[4]))
+        res.set('latency_mean_us', parse_unit_us(tokens[5]))
+        res.set('latency_sd_us', parse_unit_us(tokens[6]))
+      }
+    }
+  }
+
+  return res
+}
+
+def get_process_metrics(pid) {
+  var metrics = { cpu: 0, rss_kb: 0 }
+
+  catch {
+    var stat = read_text('/proc/${pid}/stat')
+    var fields = stat[stat.last_index_of(')') + 2, stat.length()].split(' ')
+    var utime = fields[11].to_number()
+    var stime = fields[12].to_number()
+    metrics.set('cpu', (utime + stime) / 100)
+  } as _e1 {}
+
+  catch {
+    var status = read_text('/proc/${pid}/status')
+    for line in status.split('\n') {
+      if line.starts_with('VmHWM:') {
+        var parts = line.split(':')[1].trim().split(' ')
+        metrics.set('rss_kb', parts[0].to_number())
+        break
+      }
+    }
+  } as _e2 {}
+
+  return metrics
+}
+
+# --- arguments ---------------------------------------------------------------
+
+def get_load_1m() {
+  catch {
+    var content = file('/proc/loadavg').read().to_string().trim()
+    var parts = content.split(' ')
+    if parts.length() > 0 {
+      return parts[0].to_number()
+    }
+  } as _e {}
+  return 1.0
+}
+
+def wait_for_idle(target_load) {
+  var target = target_load != nil ? target_load : 0.4
+  var current = get_load_1m()
+  if current <= target {
+    echo 'System 1-min load average is '
+      + current.fixed(2)
+      + ' (target <= '
+      + target.fixed(2)
+      + '). Ready.'
+    return
+  }
+
+  echo 'Waiting for system load average to drop below '
+    + target.fixed(2)
+    + ' (currently '
+    + current.fixed(2)
+    + ')...'
+  while true {
+    os.sleep(5)
+    current = get_load_1m()
+    echo '  load: ' + current.fixed(2) + ' (target <= ' + target.fixed(2) + ')'
+    if current <= target {
+      echo 'Load dropped to ' + current.fixed(2) + '. Ready to start.'
+      break
+    }
+  }
+}
+
+def options() {
+  var found = {
+    out: at('results', 'main.jsonl'),
+    reps: '3',
+    requests: '5000',
+    concurrency: '25',
+    streams: '10',
+    load_limit: '0.4',
+    cooldown: '3',
+    append: 'false',
+  }
+
+  for arg in os.args[2,] {
+    var mark = arg.index_of('=')
+    if mark > -1 {
+      found.set(arg[0, mark], arg[mark + 1, arg.length()])
+    }
+  }
+
+  return found
+}
+
+def pick(text, all) {
+  return text == nil ? all : text.split(',')
+}
+
+def rotated(items, by) {
+  var shift = by % items.length()
+  return items[shift, items.length()] + items[0, shift]
+}
+
+def shuffled(items, seed) {
+  var out = items.clone()
+  var state = seed
+
+  iter var i = out.length() - 1; i > 0; i-- {
+    state = (state * 1103515245 + 12345) % 2147483648
+    var j = state % (i + 1)
+    var held = out[i]
+    out[i] = out[j]
+    out[j] = held
+  }
+
+  return out
+}
+
+# --- main run_one ------------------------------------------------------------
+
+def run_one(spec, proto, workload, requests, concurrency, streams, port) {
+  var server_args = spec.args + [port.to_string(), proto]
+  var env = spec.env.clone()
+  env.set('PORT', port.to_string())
+
+  var child = os.spawn(spec.cmd, server_args, { cwd: ROOT, env })
+  var pid = child.pid()
+
+  # Wait for server readiness via TCP connect probe
+  var ready = false
+  for i in 0..60 {
+    os.sleep(0.05)
+    catch {
+      var s = net.TcpStream()
+      s.connect('127.0.0.1:${port}')
+      s.close()
+      ready = true
+      break
+    } as _e {}
+  }
+
+  if !ready {
+    child.kill(9)
+    child.wait()
+    return {
+      error: 'server failed to start within timeout',
+      protocol: proto,
+      workload,
+      lib: spec.name,
+    }
+  }
+
+  # Build h2load arguments
+  var h2_args = []
+  if proto == 'http1' {
+    h2_args.extend([
+      '--h1', '-n', requests.to_string(), '-c', concurrency.to_string(),
+    ])
+  } else {
+    h2_args.extend([
+      '-n', requests.to_string(), '-c', concurrency.to_string(), '-m',
+      streams.to_string(),
+    ])
+  }
+
+  if workload == 'echo' {
+    h2_args.extend(['-d', ECHO_FILE])
+  }
+
+  var target_url = 'http://127.0.0.1:${port}/${workload}'
+  h2_args.append(target_url)
+
+  var t0 = time()
+  var h2 = os.spawn('/usr/bin/h2load', h2_args, { cwd: ROOT })
+  var status = h2.wait(60000)
+  var t1 = time()
+
+  if status == nil {
+    h2.kill(9)
+    h2.wait()
+  }
+
+  var h2_out = h2.read_stdout().to_string()
+  var h2_err = h2.read_stderr().to_string()
+
+  # Capture process resource metrics before stopping server
+  var proc_metrics = get_process_metrics(pid)
+
+  # Gracefully terminate server
+  child.kill(15)
+  var child_status = child.wait(1500)
+  if child_status == nil {
+    child.kill(9)
+    child.wait()
+  }
+
+  var parsed = parse_h2load_output(h2_out)
+
+  var record = {
+    protocol: proto,
+    workload,
+    lib: spec.name,
+    requests,
+    concurrency,
+    streams,
+    wall_s: t1 - t0,
+    server_cpu: proc_metrics.cpu,
+    rss_kb: proc_metrics.rss_kb,
+    status: status != nil ? status : -1,
+  }
+
+  record.extend(parsed)
+
+  if status != 0 or parsed.succeeded == 0 {
+    record.set('error', (h2_err + '\n' + h2_out).trim()[-1000,])
+  }
+
+  return record
+}
+
+def main() {
+  var opts = options()
+  var reps = opts.reps.to_number()
+  var requests = opts.requests.to_number()
+  var concurrency = opts.concurrency.to_number()
+  var streams = opts.streams.to_number()
+  var load_limit = opts.load_limit.to_number()
+  var cooldown = opts.cooldown.to_number()
+
+  wait_for_idle(load_limit)
+
+  var protocols = pick(opts.get('protocols', nil), PROTOCOL_NAMES)
+  var workloads = pick(opts.get('workloads', nil), WORKLOAD_NAMES)
+  var wanted = pick(opts.get('libs', nil), LIBS.map(@(l) => l.name))
+  var libs = LIBS.filter(@(l) => wanted.contains(l.name))
+
+  # Ensure data directory and echo payload exist
+  if !file(DATA_DIR).exists() {
+    os.create_dir(DATA_DIR, nil, true)
+  }
+  if !file(ECHO_FILE).exists() {
+    var f = file(ECHO_FILE, 'w')
+    f.write('X' * 100)
+    f.close()
+  }
+
+  if opts.get('append', 'false') != 'true' {
+    var f = file(opts.out, 'w')
+    f.close()
+    var lf = file(opts.out.replace('.jsonl', '.log'), 'w')
+    lf.close()
+  }
+
+  var out_file = file(opts.out, 'a')
+  var log_path = opts.out.replace('.jsonl', '.log')
+  var log_file = file(log_path, 'a')
+
+  var log = @(text) {
+    var line = '${time().floor()} ${text}'
+    echo line
+    log_file.write(line + '\n')
+  }
+
+  var total = reps * protocols.length() * workloads.length() * libs.length()
+  var done = 0
+  var port = 9050
+
+  log('start httpbench: ${total} runs (${requests} reqs, c=${concurrency}), cooldown=${cooldown}s, protocols=${",".join(protocols)}, workloads=${",".join(workloads)}')
+
+  for rep in 0..reps {
+    for proto in rotated(protocols, rep) {
+      for w in rotated(workloads, rep) {
+        var seed = rep * 1000
+          + PROTOCOL_NAMES.index_of(proto) * 100
+          + WORKLOAD_NAMES.index_of(w)
+
+        for spec in shuffled(libs, seed + 1) {
+          # Rotate port slightly to prevent any TIME_WAIT socket collision
+          port = 9050 + (done % 50)
+
+          var record = run_one(
+            spec, proto, w, requests, concurrency, streams, port,
+          )
+          record.set('rep', rep)
+
+          out_file.write(json.encode(record) + '\n')
+          done++
+
+          var mark = record.contains('error')
+            ? 'FAILED: '
+              + (record.error.length() > 60
+                ? record.error[0, 60]
+                : record.error)
+            : '${record.req_per_s.fixed(1)} req/s, lat: ${(record.latency_mean_us / 1000).fixed(2)}ms, RSS: ${(record.rss_kb / 1024).fixed(1)}MB'
+
+          log('[${done}/${total}] rep ${rep} ${proto} ${w} ${spec.name}: ${mark}')
+          if cooldown > 0 {
+            os.sleep(cooldown)
+          }
+        }
+      }
+    }
+  }
+
+  log('end httpbench')
+}
+
+main()

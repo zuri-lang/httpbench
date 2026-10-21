@@ -1,0 +1,48 @@
+# Zuri HTTP Server Implementation for httpbench
+
+import http
+import json
+import os
+
+def main() {
+  var port = 9000
+  if os.args.length() > 2 {
+    port = os.args[2].to_number()
+  }
+
+  var proto = 'http2'
+  if os.args.length() > 3 {
+    proto = os.args[3]
+  }
+
+  var server = http.server(port)
+
+  # Explicitly turn off Brotli compression to avoid measurement skew
+  server.compression = false
+  server.http2 = proto == 'http2' or proto == 'both'
+
+  server.get('/health', @(req, res) {
+    res.header('connection', 'close')
+    res.header('content-type', 'text/plain')
+    res.write('ok')
+  })
+
+  server.get('/plaintext', @(req, res) {
+    res.header('content-type', 'text/plain')
+    res.write('Hello, World!')
+  })
+
+  server.get('/json', @(req, res) {
+    res.json({ message: 'Hello, World!' })
+  })
+
+  server.post('/echo', @(req, res) {
+    res.header('content-type', 'application/octet-stream')
+    res.write(req.body)
+  })
+
+  echo 'Zuri HTTP server listening on :' + port.to_string() + ' (' + proto + ')'
+  server.listen()
+}
+
+main()

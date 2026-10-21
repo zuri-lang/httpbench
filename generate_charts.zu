@@ -1,0 +1,710 @@
+# Generates visual benchmark charts for httpbench using Zuri's imagine module.
+#
+# Generates 6 high-resolution charts in results/charts/:
+#   01_overall_throughput_ranking.png
+#   02_protocol_comparison_http1_vs_http2.png
+#   03_workloads_comparison.png
+#   04_jit_bayelsa_speedup.png
+#   05_latency_comparison.png
+#   06_memory_footprint.png
+
+import json
+import os
+import imagine { Image, Font, StrokeFont, Color, CAP_BUTT, CAP_ROUND }
+
+var FONT_CACHE = {}
+
+def get_font(size) {
+  var sz = size != nil ? size : 14
+  var cached = FONT_CACHE.get(sz.to_string())
+  if cached != nil {
+    return cached
+  }
+
+  var chosen = nil
+  catch {
+    chosen = Font.sans(sz)
+  } as _e {
+    chosen = StrokeFont(sz)
+  }
+
+  FONT_CACHE.set(sz.to_string(), chosen)
+  return chosen
+}
+
+def load_data() {
+  var path = file('results/aggregated.json').exists()
+    ? 'results/aggregated.json'
+    : 'tmp/httpbench/results/aggregated.json'
+  var text = file(path).read().to_string()
+  return json.decode(text)
+}
+
+def get_lib_color(lib) {
+  if lib.starts_with('zuri') {
+    if lib.contains('serve') {
+      return '#127348' # Deep Indigo (Zuri Multi-Worker / http.serve)
+    }
+    if lib.contains('kebbi')
+      or (lib.contains('raw') and !lib.contains('bayelsa')) {
+      return '#6d76cb' # Light Indigo (Kebbi Baseline)
+    }
+    return '#3a2889' # Vibrant Indigo (Zuri Default / Bayelsa)
+  }
+  if lib.starts_with('node') {
+    return '#c6781f' # Amber
+  }
+  if lib.starts_with('rb') {
+    return '#d03c3c' # Pink
+  }
+  if lib.starts_with('pypy') {
+    return '#f7d755' # Purple
+  }
+  return '#2667d1' # Blue (CPython)
+}
+
+def format_number(n) {
+  if n >= 1000 {
+    var k = (n / 1000).fixed(1)
+    return '${k}k'
+  }
+  return n.fixed(0)
+}
+
+# --- Chart 1: Overall Throughput Ranking --------------------------------------
+
+def draw_overall_chart(data, out_path, is_peak) {
+  var peak_mode = is_peak != nil ? is_peak : true
+  var width = 1150
+  var height = 540
+  var img = Image(width, height, '#0f172a')
+
+  var f_title = get_font(24)
+  var f_sub = get_font(13)
+  var f_label = get_font(13)
+  var f_value = get_font(12)
+  var f_legend = get_font(12)
+
+  var title_text = peak_mode
+    ? 'HTTP Benchmark - Overall Peak Throughput Ranking (req/s)'
+    : 'HTTP Benchmark - Overall Average Throughput Ranking (req/s)'
+  var sub_text = peak_mode
+    ? 'Peak requests per second across HTTP/1.1 & HTTP/2 (cleartext h2c) over plaintext, JSON, and echo. Higher is better.'
+    : 'Average requests per second across HTTP/1.1 & HTTP/2 (cleartext h2c) over plaintext, JSON, and echo. Higher is better.'
+
+  img.text(40, 30, title_text, f_title, '#f8fafc')
+  img.text(40, 65, sub_text, f_sub, '#94a3b8')
+
+  # Legend
+  var legend_items = [
+    { label: 'Node.js (node:http2)', color: '#f59e0b' },
+    { label: 'Zuri (Default / Bayelsa)', color: '#6366f1' },
+    { label: 'Zuri (Kebbi Baseline)', color: '#818cf8' },
+    { label: 'Ruby (Falcon/YJIT)', color: '#ec4899' },
+    { label: 'Python (Hypercorn)', color: '#3b82f6' },
+    { label: 'PyPy (Hypercorn)', color: '#a855f7' },
+  ]
+
+  var leg_x = 40
+  iter var i = 0; i < legend_items.length(); i++ {
+    var item = legend_items[i]
+    var y = i < 3 ? 97 : 121
+    var x = 40 + (i % 3) * 350
+    img.fill_rounded_rect(x, y, 12, 12, 2, item.color)
+    img.text(x + 18, y - 1, item.label, f_legend, '#cbd5e1')
+  }
+
+  img.line(40, 148, width - 40, 148, '#334155', { thickness: 1, cap: CAP_BUTT })
+
+  var libs = data.libs.clone()
+  if peak_mode {
+    libs.sort(@(a, b) => b.peak_req_s - a.peak_req_s)
+  } else {
+    libs.sort(@(a, b) => b.mean_req_s - a.mean_req_s)
+  }
+
+  var max_val = 0
+  for l in libs {
+    var val = peak_mode ? l.peak_req_s : l.mean_req_s
+    if val > max_val {
+      max_val = val
+    }
+  }
+  if max_val == 0 {
+    max_val = 1
+  }
+
+  var bar_left = 180
+  var bar_max_w = width - bar_left - 180
+  var start_y = 170
+  var row_h = 48
+
+  # Grid lines
+  var step = (max_val / 5).floor()
+  for m in 1..5 {
+    var g_val = m * step
+    var gx = bar_left + (g_val / max_val) * bar_max_w
+    img.line(
+      gx, 155, gx, start_y + libs.length() * row_h, '#1e293b',
+      { thickness: 1, cap: CAP_BUTT },
+    )
+    img.text(
+      gx - 15, start_y + libs.length() * row_h + 10, format_number(g_val),
+      f_legend, '#64748b',
+    )
+  }
+
+  iter var idx = 0; idx < libs.length(); idx++ {
+    var row = libs[idx]
+    var y = start_y + idx * row_h
+    var val = peak_mode ? row.peak_req_s : row.mean_req_s
+    var lat = peak_mode ? row.peak_latency_ms : row.mean_latency_ms
+
+    var bar_w = ((val / max_val) * bar_max_w).floor()
+    if bar_w < 4 {
+      bar_w = 4
+    }
+
+    var color = get_lib_color(row.lib)
+    img.text(40, y + 10, row.lib, f_label, '#e2e8f0')
+
+    # Draw rounded bar
+    img.fill_rounded_rect(bar_left, y + 4, bar_w, 28, 4, color)
+
+    # Value text
+    var val_str = '${val.fixed(1)} req/s (${lat.fixed(2)}ms)'
+    img.text(bar_left + bar_w + 12, y + 10, val_str, f_value, '#f8fafc')
+  }
+
+  img.save(out_path)
+  echo 'Saved: ' + out_path
+}
+
+# --- Chart 2: Protocol Comparison (HTTP/1.1 vs HTTP/2) ------------------------
+
+def draw_protocol_chart(data, out_path, is_peak) {
+  var peak_mode = is_peak != nil ? is_peak : true
+  var width = 1150
+  var height = 560
+  var img = Image(width, height, '#0f172a')
+
+  var f_title = get_font(24)
+  var f_sub = get_font(13)
+  var f_label = get_font(13)
+  var f_value = get_font(11)
+  var f_legend = get_font(12)
+
+  var title_text = peak_mode
+    ? 'HTTP Benchmark - Protocol Comparison (Peak req/s)'
+    : 'HTTP Benchmark - Protocol Comparison (Average req/s)'
+  var sub_text = peak_mode
+    ? 'Peak throughput (req/s) under HTTP/1.1 vs HTTP/2 multiplexed streams. Higher is better.'
+    : 'Average throughput (req/s) under HTTP/1.1 vs HTTP/2 multiplexed streams. Higher is better.'
+
+  img.text(40, 30, title_text, f_title, '#f8fafc')
+  img.text(40, 65, sub_text, f_sub, '#94a3b8')
+
+  # Legend
+  img.fill_rounded_rect(40, 105, 14, 14, 2, '#38bdf8')
+  img.text(62, 104, 'HTTP/1.1 (Keep-Alive)', f_legend, '#e2e8f0')
+
+  img.fill_rounded_rect(260, 105, 14, 14, 2, '#818cf8')
+  img.text(282, 104, 'HTTP/2 (Cleartext h2c multiplexed)', f_legend, '#e2e8f0')
+
+  img.line(40, 138, width - 40, 138, '#334155', { thickness: 1, cap: CAP_BUTT })
+
+  var h1_map = {}
+  for item in data.by_protocol.http1 {
+    h1_map.set(item.lib, peak_mode ? item.peak_req_s : item.mean_req_s)
+  }
+  var h2_map = {}
+  for item in data.by_protocol.http2 {
+    h2_map.set(item.lib, peak_mode ? item.peak_req_s : item.mean_req_s)
+  }
+
+  var max_val = 0
+  for l in data.libs {
+    var v1 = h1_map.get(l.lib, 0)
+    var v2 = h2_map.get(l.lib, 0)
+    if v1 > max_val {
+      max_val = v1
+    }
+    if v2 > max_val {
+      max_val = v2
+    }
+  }
+  if max_val == 0 {
+    max_val = 1
+  }
+
+  var bar_left = 180
+  var bar_max_w = width - bar_left - 180
+  var start_y = 160
+  var row_h = 56
+
+  var libs = data.libs.clone()
+  if peak_mode {
+    libs.sort(@(a, b) {
+      var ma = h1_map.get(a.lib, 0)
+      var h2a = h2_map.get(a.lib, 0)
+      if h2a > ma { ma = h2a }
+      var mb = h1_map.get(b.lib, 0)
+      var h2b = h2_map.get(b.lib, 0)
+      if h2b > mb { mb = h2b }
+      return mb - ma
+    })
+  } else {
+    libs.sort(@(a, b) {
+      var ma = (h1_map.get(a.lib, 0) + h2_map.get(a.lib, 0)) / 2
+      var mb = (h1_map.get(b.lib, 0) + h2_map.get(b.lib, 0)) / 2
+      return mb - ma
+    })
+  }
+
+  iter var idx = 0; idx < libs.length(); idx++ {
+    var l = libs[idx].lib
+    var y = start_y + idx * row_h
+
+    var v1 = h1_map.get(l, 0)
+    var v2 = h2_map.get(l, 0)
+
+    var w1 = ((v1 / max_val) * bar_max_w).floor()
+    var w2 = ((v2 / max_val) * bar_max_w).floor()
+    if w1 < 4 {
+      w1 = 4
+    }
+    if w2 < 4 {
+      w2 = 4
+    }
+
+    img.text(40, y + 16, l, f_label, '#e2e8f0')
+
+    # Bar 1 (HTTP/1.1)
+    img.fill_rounded_rect(bar_left, y + 2, w1, 20, 3, '#38bdf8')
+    img.text(
+      bar_left + w1 + 10, y + 5, '${v1.fixed(0)} req/s', f_value, '#38bdf8',
+    )
+
+    # Bar 2 (HTTP/2)
+    img.fill_rounded_rect(bar_left, y + 26, w2, 20, 3, '#818cf8')
+    img.text(
+      bar_left + w2 + 10, y + 29, '${v2.fixed(0)} req/s', f_value, '#818cf8',
+    )
+  }
+
+  img.save(out_path)
+  echo 'Saved: ' + out_path
+}
+
+# --- Chart 3: Workloads Comparison -------------------------------------------
+
+def draw_workloads_chart(data, out_path, is_peak) {
+  var peak_mode = is_peak != nil ? is_peak : true
+  var width = 1150
+  var height = 620
+  var img = Image(width, height, '#0f172a')
+
+  var f_title = get_font(24)
+  var f_sub = get_font(13)
+  var f_label = get_font(13)
+  var f_value = get_font(11)
+  var f_legend = get_font(12)
+
+  var title_text = peak_mode
+    ? 'HTTP Benchmark - Workloads Comparison (Peak req/s)'
+    : 'HTTP Benchmark - Workloads Comparison (Average req/s)'
+  var sub_text = peak_mode
+    ? 'Peak throughput across Plaintext ("Hello, World!"), JSON serialization, and Echo payload (100B POST).'
+    : 'Average throughput across Plaintext ("Hello, World!"), JSON serialization, and Echo payload (100B POST).'
+
+  img.text(40, 30, title_text, f_title, '#f8fafc')
+  img.text(40, 65, sub_text, f_sub, '#94a3b8')
+
+  # Legend
+  img.fill_rounded_rect(40, 105, 14, 14, 2, '#38bdf8')
+  img.text(62, 104, 'Plaintext', f_legend, '#e2e8f0')
+
+  img.fill_rounded_rect(200, 105, 14, 14, 2, '#a855f7')
+  img.text(222, 104, 'JSON Serialization', f_legend, '#e2e8f0')
+
+  img.fill_rounded_rect(410, 105, 14, 14, 2, '#f59e0b')
+  img.text(432, 104, 'Echo POST (100B payload)', f_legend, '#e2e8f0')
+
+  img.line(40, 138, width - 40, 138, '#334155', { thickness: 1, cap: CAP_BUTT })
+
+  var p_map = {}
+  for item in data.by_workload.plaintext {
+    p_map.set(item.lib, peak_mode ? item.peak_req_s : item.mean_req_s)
+  }
+  var j_map = {}
+  for item in data.by_workload.json {
+    j_map.set(item.lib, peak_mode ? item.peak_req_s : item.mean_req_s)
+  }
+  var e_map = {}
+  for item in data.by_workload['echo'] {
+    e_map.set(item.lib, peak_mode ? item.peak_req_s : item.mean_req_s)
+  }
+
+  var max_val = 0
+  for l in data.libs {
+    var v1 = p_map.get(l.lib, 0)
+    var v2 = j_map.get(l.lib, 0)
+    var v3 = e_map.get(l.lib, 0)
+    if v1 > max_val {
+      max_val = v1
+    }
+    if v2 > max_val {
+      max_val = v2
+    }
+    if v3 > max_val {
+      max_val = v3
+    }
+  }
+  if max_val == 0 {
+    max_val = 1
+  }
+
+  var bar_left = 180
+  var bar_max_w = width - bar_left - 180
+  var start_y = 160
+  var row_h = 66
+
+  var libs = data.libs.clone()
+  if peak_mode {
+    libs.sort(@(a, b) {
+      var ma = p_map.get(a.lib, 0)
+      var j2 = j_map.get(a.lib, 0)
+      if j2 > ma { ma = j2 }
+      var e2 = e_map.get(a.lib, 0)
+      if e2 > ma { ma = e2 }
+
+      var mb = p_map.get(b.lib, 0)
+      var jb = j_map.get(b.lib, 0)
+      if jb > mb { mb = jb }
+      var eb = e_map.get(b.lib, 0)
+      if eb > mb { mb = eb }
+      return mb - ma
+    })
+  } else {
+    libs.sort(@(a, b) {
+      var ma = (p_map.get(a.lib, 0) + j_map.get(a.lib, 0) + e_map.get(a.lib, 0)) / 3
+      var mb = (p_map.get(b.lib, 0) + j_map.get(b.lib, 0) + e_map.get(b.lib, 0)) / 3
+      return mb - ma
+    })
+  }
+
+  iter var idx = 0; idx < libs.length(); idx++ {
+    var l = libs[idx].lib
+    var y = start_y + idx * row_h
+
+    var v1 = p_map.get(l, 0)
+    var v2 = j_map.get(l, 0)
+    var v3 = e_map.get(l, 0)
+
+    var w1 = ((v1 / max_val) * bar_max_w).floor()
+    var w2 = ((v2 / max_val) * bar_max_w).floor()
+    var w3 = ((v3 / max_val) * bar_max_w).floor()
+    if w1 < 3 {
+      w1 = 3
+    }
+    if w2 < 3 {
+      w2 = 3
+    }
+    if w3 < 3 {
+      w3 = 3
+    }
+
+    img.text(40, y + 22, l, f_label, '#e2e8f0')
+
+    img.fill_rounded_rect(bar_left, y + 2, w1, 16, 2, '#38bdf8')
+    img.text(bar_left + w1 + 8, y + 4, '${v1.fixed(0)}', f_value, '#38bdf8')
+
+    img.fill_rounded_rect(bar_left, y + 22, w2, 16, 2, '#a855f7')
+    img.text(bar_left + w2 + 8, y + 24, '${v2.fixed(0)}', f_value, '#a855f7')
+
+    img.fill_rounded_rect(bar_left, y + 42, w3, 16, 2, '#f59e0b')
+    img.text(bar_left + w3 + 8, y + 44, '${v3.fixed(0)}', f_value, '#f59e0b')
+  }
+
+  img.save(out_path)
+  echo 'Saved: ' + out_path
+}
+
+# --- Chart 4: Zuri Bayelsa JIT Speedup ---------------------------------------
+
+def draw_jit_speedup_chart(data, out_path) {
+  var width = 1100
+  var height = 540
+  var img = Image(width, height, '#0f172a')
+
+  var f_title = get_font(24)
+  var f_sub = get_font(13)
+  var f_label = get_font(13)
+  var f_value = get_font(13)
+  var f_legend = get_font(12)
+
+  img.text(
+    40, 30,
+    'Zuri Default (Bayelsa) Speedup Over Kebbi Baseline (Average Throughput)',
+    f_title, '#f8fafc',
+  )
+  img.text(
+    40, 65,
+    'Average throughput ratio (zuri / zuri-kebbi) across protocols and workloads. > 1.0x indicates speedup.',
+    f_sub, '#94a3b8',
+  )
+
+  img.line(40, 115, width - 40, 115, '#334155', { thickness: 1, cap: CAP_BUTT })
+
+  var matrix = data.matrix
+  var cases = [
+    { name: 'HTTP/1.1 Plaintext', proto: 'http1', work: 'plaintext' },
+    { name: 'HTTP/1.1 JSON', proto: 'http1', work: 'json' },
+    { name: 'HTTP/1.1 Echo POST', proto: 'http1', work: 'echo' },
+    { name: 'HTTP/2 Plaintext', proto: 'http2', work: 'plaintext' },
+    { name: 'HTTP/2 JSON', proto: 'http2', work: 'json' },
+    { name: 'HTTP/2 Echo POST', proto: 'http2', work: 'echo' },
+  ]
+
+  var speedups = []
+  for c in cases {
+    var raw_cell = matrix.get('zuri-kebbi', matrix.get('zuri-raw', {}))
+    var bay_cell = matrix.get('zuri', matrix.get('zuri-raw-bayelsa', {}))
+    var raw_s = raw_cell.get(c.proto, {}).get(c.work, {}).get('mean_req_s', 1)
+    var bay_s = bay_cell.get(c.proto, {}).get(c.work, {}).get('mean_req_s', 1)
+    var ratio = raw_s > 0 ? bay_s / raw_s : 1.0
+    speedups.append({
+      name: c.name,
+      raw_s,
+      bay_s,
+      ratio,
+    })
+  }
+
+  var max_ratio = 2.5
+  for s in speedups {
+    if s.ratio > max_ratio {
+      max_ratio = s.ratio
+    }
+  }
+
+  var bar_left = 260
+  var bar_max_w = width - bar_left - 180
+  var start_y = 145
+  var row_h = 56
+
+  # Baseline 1.0x line
+  var base_x = bar_left + (1.0 / max_ratio) * bar_max_w
+  img.line(
+    base_x, start_y - 15, base_x, start_y + speedups.length() * row_h,
+    '#ef4444', { thickness: 2, cap: CAP_BUTT },
+  )
+  img.text(
+    base_x - 45, start_y - 22, '1.0x (Kebbi Baseline)', f_legend, '#ef4444',
+  )
+
+  iter var idx = 0; idx < speedups.length(); idx++ {
+    var s = speedups[idx]
+    var y = start_y + idx * row_h
+    var bar_w = ((s.ratio / max_ratio) * bar_max_w).floor()
+    if bar_w < 4 {
+      bar_w = 4
+    }
+
+    img.text(40, y + 8, s.name, f_label, '#e2e8f0')
+
+    var bar_color = s.ratio >= 1.0 ? '#6366f1' : '#f59e0b'
+    img.fill_rounded_rect(bar_left, y, bar_w, 28, 4, bar_color)
+
+    var txt = '${s.ratio.fixed(2)}x (${s.bay_s.fixed(0)} vs ${s.raw_s.fixed(0)} req/s)'
+    img.text(bar_left + bar_w + 12, y + 6, txt, f_value, '#f8fafc')
+  }
+
+  img.save(out_path)
+  echo 'Saved: ' + out_path
+}
+
+# --- Chart 5: Latency Comparison ---------------------------------------------
+
+def draw_latency_chart(data, out_path) {
+  var width = 1150
+  var height = 520
+  var img = Image(width, height, '#0f172a')
+
+  var f_title = get_font(24)
+  var f_sub = get_font(13)
+  var f_label = get_font(13)
+  var f_value = get_font(12)
+  var f_legend = get_font(12)
+
+  img.text(
+    40, 30, 'HTTP Benchmark - Mean Request Latency (ms)', f_title, '#f8fafc',
+  )
+  img.text(
+    40, 65, 'Average response latency reported by h2load. Lower is better.',
+    f_sub, '#94a3b8',
+  )
+
+  img.line(40, 115, width - 40, 115, '#334155', { thickness: 1, cap: CAP_BUTT })
+
+  var libs = data.libs
+    .clone()
+    .sort(@(a, b) => a.mean_latency_ms - b.mean_latency_ms)
+
+  var max_val = 0
+  for l in libs {
+    if l.mean_latency_ms > max_val {
+      max_val = l.mean_latency_ms
+    }
+  }
+  if max_val == 0 {
+    max_val = 1
+  }
+
+  var bar_left = 180
+  var bar_max_w = width - bar_left - 180
+  var start_y = 145
+  var row_h = 50
+
+  iter var idx = 0; idx < libs.length(); idx++ {
+    var row = libs[idx]
+    var y = start_y + idx * row_h
+    var bar_w = ((row.mean_latency_ms / max_val) * bar_max_w).floor()
+    if bar_w < 4 {
+      bar_w = 4
+    }
+
+    var color = get_lib_color(row.lib)
+    img.text(40, y + 8, row.lib, f_label, '#e2e8f0')
+
+    img.fill_rounded_rect(bar_left, y + 2, bar_w, 28, 4, color)
+
+    var val_str = '${row.mean_latency_ms.fixed(2)} ms (median: ${row.median_latency_ms.fixed(2)}ms)'
+    img.text(bar_left + bar_w + 12, y + 8, val_str, f_value, '#f8fafc')
+  }
+
+  img.save(out_path)
+  echo 'Saved: ' + out_path
+}
+
+# --- Chart 6: Memory Footprint (Peak RSS) -------------------------------------
+
+def draw_memory_chart(data, out_path) {
+  var width = 1150
+  var height = 520
+  var img = Image(width, height, '#0f172a')
+
+  var f_title = get_font(24)
+  var f_sub = get_font(13)
+  var f_label = get_font(13)
+  var f_value = get_font(12)
+  var f_legend = get_font(12)
+
+  img.text(
+    40, 30, 'HTTP Benchmark - Server Peak Memory Footprint (RSS)', f_title,
+    '#f8fafc',
+  )
+  img.text(
+    40, 65,
+    'Peak Resident Set Size (VmHWM in MB) recorded from /proc/<pid>/status. Lower is better.',
+    f_sub, '#94a3b8',
+  )
+
+  img.line(40, 115, width - 40, 115, '#334155', { thickness: 1, cap: CAP_BUTT })
+
+  var libs = data.libs.clone().sort(@(a, b) => a.peak_rss_mb - b.peak_rss_mb)
+
+  var max_val = 0
+  for l in libs {
+    if l.peak_rss_mb > max_val {
+      max_val = l.peak_rss_mb
+    }
+  }
+  if max_val == 0 {
+    max_val = 1
+  }
+
+  var bar_left = 180
+  var bar_max_w = width - bar_left - 180
+  var start_y = 145
+  var row_h = 50
+
+  iter var idx = 0; idx < libs.length(); idx++ {
+    var row = libs[idx]
+    var y = start_y + idx * row_h
+    var bar_w = ((row.peak_rss_mb / max_val) * bar_max_w).floor()
+    if bar_w < 4 {
+      bar_w = 4
+    }
+
+    var color = get_lib_color(row.lib)
+    img.text(40, y + 8, row.lib, f_label, '#e2e8f0')
+
+    img.fill_rounded_rect(bar_left, y + 2, bar_w, 28, 4, color)
+
+    var val_str = '${row.peak_rss_mb.fixed(1)} MB (CPU: ${row.mean_cpu.fixed(2)}s)'
+    img.text(bar_left + bar_w + 12, y + 8, val_str, f_value, '#f8fafc')
+  }
+
+  img.save(out_path)
+  echo 'Saved: ' + out_path
+}
+
+def main() {
+  var data = load_data()
+
+  var out_dir = file('results').exists()
+    ? 'results/charts'
+    : 'tmp/httpbench/results/charts'
+  if !file(out_dir).exists() {
+    os.create_dir(out_dir)
+  }
+
+  # 1. Overall Throughput Ranking (Peak & Average)
+  draw_overall_chart(
+    data, os.join_paths(out_dir, '01a_peak_throughput_ranking.png'), true,
+  )
+  draw_overall_chart(
+    data, os.join_paths(out_dir, '01_overall_throughput_ranking.png'), false,
+  )
+  draw_overall_chart(
+    data, os.join_paths(out_dir, '01b_average_throughput_ranking.png'), false,
+  )
+
+  # 2. Protocol Comparison (Peak & Average)
+  draw_protocol_chart(
+    data, os.join_paths(out_dir, '02a_protocol_peak_throughput.png'), true,
+  )
+  draw_protocol_chart(
+    data, os.join_paths(out_dir, '02_protocol_comparison_http1_vs_http2.png'), false,
+  )
+  draw_protocol_chart(
+    data, os.join_paths(out_dir, '02b_protocol_average_throughput.png'), false,
+  )
+
+  # 3. Workloads Comparison (Peak & Average)
+  draw_workloads_chart(
+    data, os.join_paths(out_dir, '03a_workloads_peak_throughput.png'), true,
+  )
+  draw_workloads_chart(
+    data, os.join_paths(out_dir, '03_workloads_comparison.png'), false,
+  )
+  draw_workloads_chart(
+    data, os.join_paths(out_dir, '03b_workloads_average_throughput.png'), false,
+  )
+
+  # 4. Bayelsa JIT Speedup
+  draw_jit_speedup_chart(
+    data, os.join_paths(out_dir, '04_jit_bayelsa_speedup.png'),
+  )
+
+  # 5. Latency
+  draw_latency_chart(data, os.join_paths(out_dir, '05_latency_comparison.png'))
+
+  # 6. Memory Footprint
+  draw_memory_chart(data, os.join_paths(out_dir, '06_memory_footprint.png'))
+
+  echo 'All httpbench charts (peak and average) successfully generated!'
+}
+
+main()
