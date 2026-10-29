@@ -468,8 +468,8 @@ def draw_jit_speedup_chart(data, out_path) {
 
   var speedups = []
   for c in cases {
-    var raw_cell = matrix.get('zuri-kebbi', matrix.get('zuri-raw', {}))
-    var bay_cell = matrix.get('zuri', matrix.get('zuri-raw-bayelsa', {}))
+    var raw_cell = matrix.get('zuri-kebbi', matrix.get('zuri-kebbi', {}))
+    var bay_cell = matrix.get('zuri', matrix.get('zuri', {}))
     var raw_s = raw_cell.get(c.proto, {}).get(c.work, {}).get('mean_req_s', 1)
     var bay_s = bay_cell.get(c.proto, {}).get(c.work, {}).get('mean_req_s', 1)
     var ratio = raw_s > 0 ? bay_s / raw_s : 1.0

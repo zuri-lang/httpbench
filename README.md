@@ -70,12 +70,12 @@ Built-in Brotli response compression was disabled across all Zuri configurations
 
 | Rank | Runtime / Configuration | Peak Throughput (req/s) | Average Throughput (req/s) | Mean Latency (ms) | Peak RSS (MB) |
 | :---: | :--- | :---: | :---: | :---: | :---: |
-| **1** | **Node.js** (`node-raw` v24 / V8) | **37,037.8** | **28,635.7** | 4.26 | 221.2 |
+| **1** | **Node.js** (`node` v24 / V8) | **37,037.8** | **28,635.7** | 4.26 | 221.2 |
 | **2** | **Zuri Default** (`zuri` Bayelsa Direct) | **24,552.6** | **20,159.0** | **3.22** | 101.8 |
 | **3** | **Zuri Kebbi** (`zuri-kebbi` Baseline) | **17,232.5** | **14,892.4** | 4.73 | 122.1 |
-| **4** | **Ruby** (`rb-raw` Falcon / YJIT) | **9,426.9** | **5,972.0** | 38.92 | **37.1** |
-| **5** | **PyPy** (`pypy-raw` PyPy 3.11) | **5,161.6** | **3,849.0** | 40.33 | 137.2 |
-| **6** | **Python** (`py-raw` CPython 3.14) | **4,061.6** | **3,314.9** | 42.43 | **37.5** |
+| **4** | **Ruby** (`rb` Falcon / YJIT) | **9,426.9** | **5,972.0** | 38.92 | **37.1** |
+| **5** | **PyPy** (`pypy` PyPy 3.11) | **5,161.6** | **3,849.0** | 40.33 | 137.2 |
+| **6** | **Python** (`py` CPython 3.14) | **4,061.6** | **3,314.9** | 42.43 | **37.5** |
 
 ### Peak Throughput Comparison
 ![Peak Throughput Ranking](./charts/01a_peak_throughput_ranking.png)
@@ -89,12 +89,12 @@ Built-in Brotli response compression was disabled across all Zuri configurations
 
 | Runtime | HTTP/1.1 Peak (req/s) | HTTP/1.1 Mean (req/s) | HTTP/2 Peak (req/s) | HTTP/2 Mean (req/s) | H2 / H1 Peak Ratio |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Node.js** (`node-raw`) | 28,150.1 | 23,882.9 | 37,037.8 | 33,388.6 | **1.32x** |
+| **Node.js** (`node`) | 28,150.1 | 23,882.9 | 37,037.8 | 33,388.6 | **1.32x** |
 | **Zuri Default** (`zuri`) | **16,740.6** | **15,965.1** | **24,552.6** | **24,353.0** | **1.47x** |
 | **Zuri Kebbi** (`zuri-kebbi`) | 14,462.0 | 13,411.0 | 17,232.5 | 16,373.9 | **1.19x** |
-| **Ruby** (`rb-raw`) | 9,426.9 | 8,608.1 | 3,494.5 | 3,336.0 | 0.37x |
-| **PyPy** (`pypy-raw`) | 5,161.6 | 4,987.0 | 2,985.5 | 2,711.1 | 0.58x |
-| **Python** (`py-raw`) | 4,061.6 | 3,813.0 | 3,317.6 | 2,816.7 | 0.82x |
+| **Ruby** (`rb`) | 9,426.9 | 8,608.1 | 3,494.5 | 3,336.0 | 0.37x |
+| **PyPy** (`pypy`) | 5,161.6 | 4,987.0 | 2,985.5 | 2,711.1 | 0.58x |
+| **Python** (`py`) | 4,061.6 | 3,813.0 | 3,317.6 | 2,816.7 | 0.82x |
 
 ### Protocol Comparison (Peak Throughput)
 ![Protocol Peak Throughput](./charts/02a_protocol_peak_throughput.png)
@@ -108,12 +108,12 @@ Built-in Brotli response compression was disabled across all Zuri configurations
 
 | Runtime | Plaintext Peak | Plaintext Mean | JSON Peak | JSON Mean | Echo Peak | Echo Mean |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Node.js** (`node-raw`) | 32,954.4 | 30,552.3 | 37,037.8 | 31,629.5 | 30,173.7 | 23,725.5 |
+| **Node.js** (`node`) | 32,954.4 | 30,552.3 | 37,037.8 | 31,629.5 | 30,173.7 | 23,725.5 |
 | **Zuri Default** (`zuri`) | **24,552.6** | **20,646.6** | **24,244.0** | **19,973.9** | **24,262.3** | **19,856.6** |
 | **Zuri Kebbi** (`zuri-kebbi`) | 17,232.5 | 15,374.0 | 16,790.1 | 15,626.1 | 15,099.1 | 13,677.3 |
-| **Ruby** (`rb-raw`) | 9,308.3 | 6,401.4 | 9,426.9 | 6,431.6 | 7,089.0 | 5,083.1 |
-| **PyPy** (`pypy-raw`) | 5,138.5 | 4,006.8 | 5,161.6 | 4,073.5 | 4,660.9 | 3,466.8 |
-| **Python** (`py-raw`) | 3,739.6 | 3,507.1 | 4,061.6 | 3,689.6 | 3,637.8 | 2,747.9 |
+| **Ruby** (`rb`) | 9,308.3 | 6,401.4 | 9,426.9 | 6,431.6 | 7,089.0 | 5,083.1 |
+| **PyPy** (`pypy`) | 5,138.5 | 4,006.8 | 5,161.6 | 4,073.5 | 4,660.9 | 3,466.8 |
+| **Python** (`py`) | 3,739.6 | 3,507.1 | 4,061.6 | 3,689.6 | 3,637.8 | 2,747.9 |
 
 ### Workload Breakdown (Peak Throughput)
 ![Workloads Peak Throughput](./charts/03a_workloads_peak_throughput.png)
@@ -147,11 +147,11 @@ Built-in Brotli response compression was disabled across all Zuri configurations
 | Runtime | HTTP/1.1 Latency (ms) | HTTP/2 Latency (ms) | Overall Latency (ms) |
 | :--- | :---: | :---: | :---: |
 | **Zuri Default** (`zuri`) | **0.83** | **5.62** | **3.22** |
-| **Node.js** (`node-raw`) | 1.08 | 7.43 | 4.26 |
+| **Node.js** (`node`) | 1.08 | 7.43 | 4.26 |
 | **Zuri Kebbi** (`zuri-kebbi`) | 1.02 | 8.43 | 4.73 |
-| **Ruby** (`rb-raw`) | 2.95 | 74.90 | 38.92 |
-| **PyPy** (`pypy-raw`) | 5.02 | 75.64 | 40.33 |
-| **Python** (`py-raw`) | 6.57 | 78.30 | 42.43 |
+| **Ruby** (`rb`) | 2.95 | 74.90 | 38.92 |
+| **PyPy** (`pypy`) | 5.02 | 75.64 | 40.33 |
+| **Python** (`py`) | 6.57 | 78.30 | 42.43 |
 
 ![Latency Comparison](./charts/05_latency_comparison.png)
 
@@ -159,12 +159,12 @@ Built-in Brotli response compression was disabled across all Zuri configurations
 
 | Runtime / Configuration | Peak RSS (MB) | Notes |
 | :--- | :---: | :--- |
-| **Ruby** (`rb-raw`) | **37.1 MB** | Compact fiber-based memory model |
-| **Python** (`py-raw`) | **37.5 MB** | Minimal asyncio runtime footprint |
+| **Ruby** (`rb`) | **37.1 MB** | Compact fiber-based memory model |
+| **Python** (`py`) | **37.5 MB** | Minimal asyncio runtime footprint |
 | **Zuri Default** (`zuri`) | 101.8 MB | Single-threaded GC heap + Cranelift machine code buffers |
 | **Zuri Kebbi** (`zuri-kebbi`) | 122.1 MB | Kebbi profiler bytecode metadata |
-| **PyPy** (`pypy-raw`) | 137.2 MB | PyPy tracing JIT heap |
-| **Node.js** (`node-raw`) | 221.2 MB | V8 isolate heap and libuv buffer pools |
+| **PyPy** (`pypy`) | 137.2 MB | PyPy tracing JIT heap |
+| **Node.js** (`node`) | 221.2 MB | V8 isolate heap and libuv buffer pools |
 
 ![Memory Footprint](./charts/06_memory_footprint.png)
 

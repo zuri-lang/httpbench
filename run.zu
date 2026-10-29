@@ -2,7 +2,7 @@
 # across language runtimes and JIT configurations using h2load.
 #
 #   zuri run run.zu out=results/main.jsonl reps=3 requests=5000 concurrency=25
-#     [protocols=http1,http2] [workloads=plaintext,json,echo] [libs=zuri-raw,node-raw]
+#     [protocols=http1,http2] [workloads=plaintext,json,echo] [libs=zuri,node]
 
 import json
 import os
@@ -33,10 +33,10 @@ var LIBS = [
     'zuri-kebbi', ZURI, ['run', at('zu', 'server.zu')], { ZURI_JIT_KEBBI: '1' },
   ),
   # lib('zuri-serve', ZURI, ['run', at('zu', 'server_serve.zu')], {}),
-  lib('node-raw', NODE, [at('js', 'server.mjs')], {}),
-  lib('py-raw', CPYTHON, [at('py', 'server.py')], {}),
-  lib('pypy-raw', PYPY, [at('py', 'server.py')], {}),
-  lib('rb-raw', RUBY, [], {}),
+  lib('node', NODE, [at('js', 'server.mjs')], {}),
+  lib('py', CPYTHON, [at('py', 'server.py')], {}),
+  lib('pypy', PYPY, [at('py', 'server.py')], {}),
+  lib('rb', RUBY, [], {}),
 ]
 
 var DATA_DIR = at('data')
@@ -292,7 +292,7 @@ def run_one(spec, proto, workload, requests, concurrency, streams, port) {
   h2_args.append(target_url)
 
   var t0 = time()
-  var h2 = os.spawn('/usr/bin/h2load', h2_args, { cwd: ROOT })
+  var h2 = os.spawn('h2load', h2_args, { cwd: ROOT })
   var status = h2.wait(60000)
   var t1 = time()
 
