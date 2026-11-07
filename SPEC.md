@@ -27,10 +27,10 @@ An automated HTTP benchmarking suite comparing Zuri's standard HTTP server (`lib
 | `zuri` | Zuri (Default / Bayelsa) | `libs/http` (`http.server`) | Default (Bayelsa direct, single-threaded), `compression = false` |
 | `zuri-kebbi` | Zuri (Kebbi Baseline) | `libs/http` (`http.server`) | `ZURI_JIT_KEBBI=1` (single-threaded), `compression = false` |
 | `zuri-serve` | Zuri (Multi-Worker) | `libs/http` (`http.serve`) | Multi-worker isolate pool (`cpu_count`), `compression = false` |
-| `node-raw` | Node.js v24 (V8) | `node:http` & `node:http2` | Standard library HTTP/1.1 and HTTP/2 |
-| `py-raw` | CPython 3.14 | `hypercorn` (ASGI) | Pure-async HTTP/1.1 & HTTP/2 server |
-| `pypy-raw` | PyPy 3.11 (JIT) | `hypercorn` (ASGI) | PyPy JIT async HTTP/1.1 & HTTP/2 server |
-| `rb-raw` | Ruby 4.0.6 (YJIT) | `falcon` (Async) | Fiber-based async HTTP/1.1 & HTTP/2 server |
+| `node` | Node.js v24 (V8) | `node:http` & `node:http2` | Standard library HTTP/1.1 and HTTP/2 |
+| `py` | CPython 3.14 | `hypercorn` (ASGI) | Pure-async HTTP/1.1 & HTTP/2 server |
+| `pypy` | PyPy 3.11 (JIT) | `hypercorn` (ASGI) | PyPy JIT async HTTP/1.1 & HTTP/2 server |
+| `rb` | Ruby 4.0.6 (YJIT) | `falcon` (Async) | Fiber-based async HTTP/1.1 & HTTP/2 server |
 
 ## Important Configuration Notes
 

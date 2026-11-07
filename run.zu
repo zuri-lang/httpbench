@@ -3,6 +3,10 @@
 #
 #   zuri run run.zu out=results/main.jsonl reps=3 requests=5000 concurrency=25
 #     [protocols=http1,http2] [workloads=plaintext,json,echo] [libs=zuri,node]
+#     [h2load=/path/to/h2load]
+#
+# h2load is found on PATH unless `h2load=` names it. Both its latency
+# formats are read: the one before nghttp2 1.70 and the one after.
 
 import json
 import os
@@ -48,6 +52,10 @@ def read_text(path) {
   return file(path).read().to_string()
 }
 
+def words(text) {
+  return text.trim().split('/\s+/')
+}
+
 def parse_unit_us(s) {
   var text = s.trim()
   if text.ends_with('us') {
@@ -74,6 +82,10 @@ def parse_h2load_output(out) {
     latency_mean_us: 0,
     latency_sd_us: 0,
   }
+
+  # The latency table's header names its columns, whose set and order
+  # differ between h2load versions.
+  var columns = nil
 
   for line in out.split('\n') {
     var l = line.trim()
@@ -104,20 +116,30 @@ def parse_h2load_output(out) {
           res.set('errored', p.split(' ')[0].to_number())
         }
       }
-    } else if l.starts_with('time for request:') {
-      # time for request:      367us      6.38ms       888us      1.35ms    95.00%
-      var raw_tokens = l.split(' ')
-      var tokens = []
-      for t in raw_tokens {
-        if t != '' {
-          tokens.append(t)
+    } else if l.starts_with('min ') {
+      columns = words(l)
+    } else if columns != nil and l.index_of(':') > -1 {
+      # Before nghttp2 1.70 (min, max, mean, sd, +/- sd):
+      #   time for request:      367us      6.38ms       888us      1.35ms    95.00%
+      # From 1.70 (min, max, median, p95, p99, mean, sd, +/- sd):
+      #   request     :       22us      1.71ms        98us       304us ...
+      var label = l[0, l.index_of(':')].trim()
+
+      if label == 'request' or label == 'time for request' {
+        var values = words(l[l.index_of(':') + 1, l.length()])
+        var fields = {
+          min: 'latency_min_us',
+          max: 'latency_max_us',
+          mean: 'latency_mean_us',
+          sd: 'latency_sd_us',
         }
-      }
-      if tokens.length() >= 7 {
-        res.set('latency_min_us', parse_unit_us(tokens[3]))
-        res.set('latency_max_us', parse_unit_us(tokens[4]))
-        res.set('latency_mean_us', parse_unit_us(tokens[5]))
-        res.set('latency_sd_us', parse_unit_us(tokens[6]))
+
+        for name, field in fields {
+          var column = columns.index_of(name)
+          if column > -1 and column < values.length() {
+            res.set(field, parse_unit_us(values[column]))
+          }
+        }
       }
     }
   }
@@ -125,7 +147,54 @@ def parse_h2load_output(out) {
   return res
 }
 
+# The server's CPU seconds and resident memory. Linux keeps both in /proc,
+# with the peak resident size. Elsewhere `ps` reports them, and since no
+# peak is kept for another process, the resident size is the one when the
+# load ends.
 def get_process_metrics(pid) {
+  if os.platform == 'linux' {
+    return proc_metrics(pid)
+  }
+
+  return ps_metrics(pid)
+}
+
+def ps_metrics(pid) {
+  var metrics = { cpu: 0, rss_kb: 0 }
+
+  catch {
+    var ps = os.spawn('ps', ['-o', 'time=,rss=', '-p', pid.to_string()])
+    ps.wait()
+    var fields = words(ps.read_stdout().to_string())
+    if fields.length() >= 2 {
+      metrics.set('cpu', parse_cpu_time(fields[0]))
+      metrics.set('rss_kb', fields[1].to_number())
+    }
+  } as _e {}
+
+  return metrics
+}
+
+# CPU time as `ps` prints it, `[[dd-]hh:]mm:ss.ss`, in seconds.
+def parse_cpu_time(text) {
+  var days = 0
+  var rest = text
+  var dash = rest.index_of('-')
+
+  if dash > -1 {
+    days = rest[0, dash].to_number()
+    rest = rest[dash + 1, rest.length()]
+  }
+
+  var seconds = 0
+  for part in rest.split(':') {
+    seconds = seconds * 60 + part.to_number()
+  }
+
+  return days * 86400 + seconds
+}
+
+def proc_metrics(pid) {
   var metrics = { cpu: 0, rss_kb: 0 }
 
   catch {
@@ -201,6 +270,7 @@ def options() {
     load_limit: '0.4',
     cooldown: '3',
     append: 'false',
+    h2load: 'h2load',
   }
 
   for arg in os.args[2,] {
@@ -239,7 +309,9 @@ def shuffled(items, seed) {
 
 # --- main run_one ------------------------------------------------------------
 
-def run_one(spec, proto, workload, requests, concurrency, streams, port) {
+def run_one(
+  spec, proto, workload, requests, concurrency, streams, port, h2load,
+) {
   var server_args = spec.args + [port.to_string(), proto]
   var env = spec.env.clone()
   env.set('PORT', port.to_string())
@@ -292,7 +364,7 @@ def run_one(spec, proto, workload, requests, concurrency, streams, port) {
   h2_args.append(target_url)
 
   var t0 = time()
-  var h2 = os.spawn('h2load', h2_args, { cwd: ROOT })
+  var h2 = os.spawn(h2load, h2_args, { cwd: ROOT })
   var status = h2.wait(60000)
   var t1 = time()
 
@@ -400,7 +472,7 @@ def main() {
           port = 9050 + (done % 50)
 
           var record = run_one(
-            spec, proto, w, requests, concurrency, streams, port,
+            spec, proto, w, requests, concurrency, streams, port, opts.h2load,
           )
           record.set('rep', rep)
 
